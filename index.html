@@ -15,7 +15,7 @@
     <section class="hero">
       <div class="kicker">Day2Sleep MVP</div>
       <h1>좌식 전환 이벤트 감지</h1>
-      <p>걷기 자동 전환을 제외하고, 초기 상태·휴대폰 위치·수동 보정·상태 신뢰도와 위/아래 전환 추세만으로 좌식 상태를 보수적으로 추정합니다.</p>
+      <p>걷기 자동 전환을 제외하고, 짧은 수직 impulse와 이후 안정 상태를 확인해 앉음·일어남 전환을 보수적으로 추정합니다.</p>
     </section>
 
     <section id="screen-home" class="screen active">
@@ -39,7 +39,7 @@
         <button class="btn btn-primary" id="startBtn">IMU 측정 시작</button>
         <div class="row" style="margin-top:10px"><button class="btn btn-secondary" id="demoStillBtn">앉아있기 데모</button><button class="btn btn-secondary" id="demoStandBtn">일어남 데모</button></div>
         <div class="row" style="margin-top:10px"><button class="btn btn-secondary" id="demoMoveBtn">일반 움직임 데모</button><button class="btn btn-secondary" id="demoSitBtn">앉기 데모</button></div>
-        <p class="hint" style="margin-bottom:0">걷기/흔들림은 상태 전환 조건에서 제외했습니다. 일어남·앉음은 1.5초 이상 같은 방향의 위/아래 이동 추세가 이어질 때만 확정합니다.</p>
+        <p class="hint" style="margin-bottom:0">걷기/흔들림은 상태 전환 조건에서 제외했습니다. 일어남·앉음은 짧은 수직 impulse가 먼저 감지되고, 이후 안정 상태가 확인될 때만 확정합니다.</p>
       </div>
 
       <h2 class="section-title">수동 보정</h2>
@@ -80,8 +80,8 @@
       <h2 class="section-title">감지 상태</h2>
       <div class="card">
         <div class="signal-grid">
-          <div class="signal"><strong>위/아래 지속 시간</strong><span id="verticalScore">↑0.0초 / ↓0.0초</span></div>
-          <div class="signal"><strong>일반 움직임 지속</strong><span id="walkScore">0.00초</span></div>
+          <div class="signal"><strong>전환 후보</strong><span id="verticalScore">없음</span></div>
+          <div class="signal"><strong>일반 움직임</strong><span id="walkScore">0.00초</span></div>
           <div class="signal"><strong>회전량</strong><span id="rotationScore">0.0</span></div>
           <div class="signal"><strong>전환 쿨다운</strong><span id="cooldownText">없음</span></div>
           <div class="signal"><strong>센서 신뢰도</strong><span id="sensorConfidenceText">낮음</span></div>
@@ -89,10 +89,10 @@
         </div>
         <div class="divider"></div>
         <div class="form-group"><label>자동 감지 민감도 <span class="num" id="sensitivityVal">보통</span></label><input id="sensitivity" type="range" min="1" max="5" value="4" /></div>
-        <p class="hint" style="margin-bottom:0">걷기 감지는 상태 전환 조건에서 제거했습니다. 민감도를 낮추면 빨리 잡지만 오탐이 늘고, 높이면 안정적이지만 실제 전환을 놓칠 수 있습니다. 기본값은 매우 보수적으로 설정했습니다.</p>
+        <p class="hint" style="margin-bottom:0">걷기 감지는 상태 전환 조건에서 제거했습니다. 민감도를 낮추면 작은 impulse도 후보로 잡고, 높이면 강한 impulse와 더 긴 안정 확인이 필요합니다.</p>
       </div>
       <h2 class="section-title">기술적 한계 안내</h2>
-      <div class="notice">스마트폰 IMU는 절대 높이를 직접 재지 못합니다. 이 앱은 중력 방향 선형가속도를 짧게 적분해 위/아래 이동 추세를 추정합니다. 책상 위에 놓인 휴대폰은 사용자의 자세 전환을 대표하지 못하므로 자동 전환을 보류합니다.</div>
+      <div class="notice">스마트폰 IMU는 절대 높이를 직접 재지 못합니다. 이 앱은 중력 방향 선형가속도에서 짧은 impulse를 찾고, 그 뒤 움직임이 안정되는지 확인해 전환 이벤트를 추정합니다. 책상 위에 놓인 휴대폰은 사용자의 자세 전환을 대표하지 못하므로 자동 전환을 보류합니다.</div>
     </section>
 
     <section id="screen-sleep" class="screen">
@@ -112,7 +112,7 @@
 
   <script>
     const $=id=>document.getElementById(id);
-    const STORAGE_KEY='day2sleep_mvp_v8_no_walk_transition';
+    const STORAGE_KEY='day2sleep_mvp_v9_impulse_settle';
     const BODY_SEATED='앉은 상태', BODY_STANDING='일어난 상태';
     const EVENT_STILL='정지', EVENT_MOVE='일반 움직임', EVENT_VERTICAL='수직 전환', EVENT_NONE='상태 전환 없음';
     const BOUT_THRESHOLD_SECONDS=20;
@@ -128,8 +128,9 @@
     let seatedStreak=0,currentEvent='대기',movementEMA=0;
     let gravity={x:0,y:0,z:9.81,ready:false};
     let motionWindow=[],verticalVelocity=0,lastSampleTime=0;
-    let lastSignal={upSeconds:0,downSeconds:0,walkScore:0,rotation:0,cooldownLeft:0,raw:'대기'};
-    let gate={lastTransitionAt:0,upSeconds:0,downSeconds:0,walkSeconds:0,status:'대기'};
+    let lastSignal={candidate:'없음',impulseScore:0,settleScore:0,moveScore:0,rotation:0,cooldownLeft:0,raw:'대기'};
+    let gate={lastTransitionAt:0,moveSeconds:0,status:'대기'};
+    let transitionCandidate={type:null,startedAt:0,strength:0,settleSeconds:0,lastSeenAt:0};
 
     function formatTime(seconds){seconds=Math.max(0,Math.round(seconds));if(seconds<60)return seconds+'초';const m=Math.floor(seconds/60),s=seconds%60;return s?`${m}분 ${s}초`:`${m}분`}
     function mean(a){return a.length?a.reduce((x,y)=>x+y,0)/a.length:0}
@@ -171,57 +172,115 @@
       const filteredUpAccel=Math.abs(verticalUpAccel)<deadband?0:verticalUpAccel;
       verticalVelocity=verticalVelocity*.86+filteredUpAccel*dt;
       if(linMag<.12&&rotation<16)verticalVelocity*=.72;
-      motionWindow.push({t:now,verticalUpAccel,verticalVelocity,verticalAbs,linMag,rotation,jerk});
+      motionWindow.push({t:now,dt,verticalUpAccel,verticalVelocity,verticalAbs,linMag,rotation,jerk});
       const cutoff=now-6500;motionWindow=motionWindow.filter(v=>v.t>=cutoff).slice(-220);
     }
     function samplesSince(ms){const cutoff=Date.now()-ms;return motionWindow.filter(v=>v.t>=cutoff)}
-    function thresholds(){const s=Number(state.settings.sensitivity||4);return{verticalVelocity:[0,.095,.115,.14,.17,.205][s],verticalAccel:[0,.28,.34,.42,.50,.60][s],directionRatio:[0,.68,.72,.76,.80,.84][s],sustainMs:[0,1400,1500,1600,1750,1900][s],stillMean:[0,.24,.20,.17,.14,.11][s],rotationCap:[0,140,120,100,85,70][s],moveLinMean:[0,.55,.63,.72,.84,.98][s]}}
-
+    function thresholds(){
+      const s=Number(state.settings.sensitivity||4);
+      return{
+        impulse:[0,.055,.075,.105,.14,.18][s],
+        peak:[0,.22,.30,.42,.55,.70][s],
+        settleLin:[0,.58,.48,.40,.33,.27][s],
+        settleRot:[0,105,88,72,58,46][s],
+        settleNeed:[0,.35,.45,.55,.65,.80][s],
+        candidateMaxMs:[0,2200,2100,2000,1900,1750][s],
+        cooldownMs:[0,1700,1900,2200,2500,2800][s],
+        moveLinMean:[0,.65,.78,.92,1.08,1.25][s]
+      }
+    }
+    function integratePositive(samples, sign=1, deadband=.10){
+      let total=0;
+      for(const v of samples){
+        const a=sign*v.verticalUpAccel-deadband;
+        if(a>0) total+=a*(v.dt||.035);
+      }
+      return total;
+    }
+    function clearTransitionCandidate(reason='후보 없음'){
+      transitionCandidate={type:null,startedAt:0,strength:0,settleSeconds:0,lastSeenAt:0};
+      gate.status=reason;
+    }
     function detectEvent(){
       const now=Date.now(),th=thresholds();
-      const recent=samplesSince(1300),walkWindow=samplesSince(1800),stillWindow=samplesSince(900),directionWindow=samplesSince(th.sustainMs);
-      if(recent.length<6){gate.status='센서 샘플 수집 중';return EVENT_STILL}
-      const linMean=mean(recent.map(v=>v.linMag));
-      const rotMean=mean(recent.map(v=>v.rotation));
+      const impulseWindow=samplesSince(700), settleWindow=samplesSince(650), moveWindow=samplesSince(900);
+      if(impulseWindow.length<6){gate.status='센서 샘플 수집 중';return EVENT_STILL}
+
+      const linMean=mean(impulseWindow.map(v=>v.linMag));
+      const rotMean=mean(impulseWindow.map(v=>v.rotation));
       movementEMA=movementEMA*.82+(linMean+rotMean/180)*.18;
       state.intensitySum+=movementEMA;state.intensityN+=1;
 
       if(state.phoneMode==='desk'){
-        gate.upSeconds=0;gate.downSeconds=0;gate.walkSeconds=0;
-        gate.status='휴대폰이 몸과 떨어져 자동 전환 보류';
+        clearTransitionCandidate('휴대폰이 몸과 떨어져 자동 전환 보류');
+        gate.moveSeconds=0;
         setConfidence(25,'책상 위 위치: 수동 보정 필요');
-        lastSignal={...lastSignal,upSeconds:0,downSeconds:0,walkScore:0,rotation:rotMean,raw:'자동 전환 보류'};
+        lastSignal={candidate:'자동 보류',impulseScore:0,settleScore:0,moveScore:0,rotation:rotMean,cooldownLeft:0,raw:'자동 전환 보류'};
         return EVENT_NONE;
       }
 
       const dt=Math.min(0.35,(now-lastTick)/1000||0.15);
-      const moveCandidate=walkWindow.length>=10&&mean(walkWindow.map(v=>v.linMag))>th.moveLinMean&&std(walkWindow.map(v=>v.linMag))>.18&&mean(walkWindow.map(v=>v.jerk))>.16;
-      if(moveCandidate){gate.walkSeconds=Math.min(2.5,gate.walkSeconds+dt)}else{gate.walkSeconds=Math.max(0,gate.walkSeconds-dt*.45)}
-      // 일반 움직임은 기록만 하고 상태 전환에는 사용하지 않습니다.
+      const moveCandidate=moveWindow.length>=7&&mean(moveWindow.map(v=>v.linMag))>th.moveLinMean&&std(moveWindow.map(v=>v.linMag))>.18;
+      gate.moveSeconds=moveCandidate?Math.min(2.5,gate.moveSeconds+dt):Math.max(0,gate.moveSeconds-dt*.5);
+      // 일반 움직임은 참고용으로만 표시하고 상태 전환에는 사용하지 않습니다.
 
-      const cooldownLeft=Math.max(0,2400-(now-gate.lastTransitionAt));
-      if(cooldownLeft>0){lastSignal={upSeconds:gate.upSeconds,downSeconds:gate.downSeconds,walkScore:gate.walkSeconds,rotation:rotMean,cooldownLeft:cooldownLeft/1000,raw:'쿨다운'};gate.status='전환 후 쿨다운';return EVENT_NONE}
+      const cooldownLeft=Math.max(0,th.cooldownMs-(now-gate.lastTransitionAt));
+      if(cooldownLeft>0){
+        lastSignal={candidate:transitionCandidate.type||'쿨다운',impulseScore:transitionCandidate.strength||0,settleScore:transitionCandidate.settleSeconds||0,moveScore:gate.moveSeconds,rotation:rotMean,cooldownLeft:cooldownLeft/1000,raw:'쿨다운'};
+        gate.status='전환 후 쿨다운';
+        return EVENT_NONE;
+      }
 
-      const enough=directionWindow.length>=12;
-      const upVotes=directionWindow.filter(v=>v.verticalVelocity>th.verticalVelocity||v.verticalUpAccel>th.verticalAccel).length;
-      const downVotes=directionWindow.filter(v=>v.verticalVelocity<-th.verticalVelocity||v.verticalUpAccel<-th.verticalAccel).length;
-      const upRatio=enough?upVotes/directionWindow.length:0,downRatio=enough?downVotes/directionWindow.length:0;
-      const upMean=enough?mean(directionWindow.map(v=>Math.max(0,v.verticalVelocity))):0,downMean=enough?mean(directionWindow.map(v=>Math.max(0,-v.verticalVelocity))):0;
-      const windowMs=enough?now-directionWindow[0].t:0;
-      const lowRotation=rotMean<th.rotationCap,notWalking=gate.walkSeconds<.7;
-      const sustainedUp=enough&&windowMs>=th.sustainMs*.82&&upRatio>th.directionRatio&&upMean>th.verticalVelocity*.55&&lowRotation&&notWalking;
-      const sustainedDown=enough&&windowMs>=th.sustainMs*.82&&downRatio>th.directionRatio&&downMean>th.verticalVelocity*.55&&lowRotation&&notWalking;
-      if(sustainedUp){gate.upSeconds=Math.min(2.4,gate.upSeconds+dt);gate.downSeconds=Math.max(0,gate.downSeconds-dt*.8)}
-      else if(sustainedDown){gate.downSeconds=Math.min(2.4,gate.downSeconds+dt);gate.upSeconds=Math.max(0,gate.upSeconds-dt*.8)}
-      else{gate.upSeconds=Math.max(0,gate.upSeconds-dt*.65);gate.downSeconds=Math.max(0,gate.downSeconds-dt*.65)}
-      lastSignal={upSeconds:gate.upSeconds,downSeconds:gate.downSeconds,walkScore:gate.walkSeconds,rotation:rotMean,cooldownLeft:0,raw:'분석 중'};
+      const posImpulse=integratePositive(impulseWindow,1,.10);
+      const negImpulse=integratePositive(impulseWindow,-1,.10);
+      const maxPos=Math.max(...impulseWindow.map(v=>v.verticalUpAccel));
+      const maxNeg=Math.max(...impulseWindow.map(v=>-v.verticalUpAccel));
+      const prev=state.bodyState||BODY_SEATED;
+      const targetType=prev===BODY_SEATED?'up':'down';
+      const targetImpulse=targetType==='up'?posImpulse:negImpulse;
+      const oppositeImpulse=targetType==='up'?negImpulse:posImpulse;
+      const targetPeak=targetType==='up'?maxPos:maxNeg;
+      const impulseLooksReal=targetImpulse>th.impulse&&targetPeak>th.peak&&targetImpulse>oppositeImpulse*1.18;
 
-      if((state.bodyState||BODY_SEATED)===BODY_SEATED&&gate.upSeconds>=1.5){gate.upSeconds=0;gate.downSeconds=0;gate.lastTransitionAt=now;gate.status='1.5초 위 방향 지속 확정';return EVENT_VERTICAL}
-      if((state.bodyState||BODY_SEATED)===BODY_STANDING&&gate.downSeconds>=1.5){gate.upSeconds=0;gate.downSeconds=0;gate.lastTransitionAt=now;gate.status='1.5초 아래 방향 지속 확정';return EVENT_VERTICAL}
+      if(impulseLooksReal){
+        if(transitionCandidate.type!==targetType){
+          transitionCandidate={type:targetType,startedAt:now,strength:targetImpulse,settleSeconds:0,lastSeenAt:now};
+          addLog(`${targetType==='up'?'일어남':'앉음'} 후보 impulse 감지`);
+        }else{
+          transitionCandidate.strength=Math.max(transitionCandidate.strength,targetImpulse);
+          transitionCandidate.lastSeenAt=now;
+        }
+      }
 
-      const still=stillWindow.length>5&&mean(stillWindow.map(v=>v.linMag))<th.stillMean&&mean(stillWindow.map(v=>v.rotation))<18;
-      gate.status=still?'정지: 기존 상태 유지':(gate.upSeconds||gate.downSeconds)?`전환 누적 중 ↑${gate.upSeconds.toFixed(1)}s ↓${gate.downSeconds.toFixed(1)}s`:'일반 움직임: 상태 유지';
-      lastSignal.raw=still?EVENT_STILL:(gate.walkSeconds>0.6?EVENT_MOVE:EVENT_NONE);
+      if(transitionCandidate.type){
+        const age=now-transitionCandidate.startedAt;
+        const settleLin=settleWindow.length?mean(settleWindow.map(v=>v.linMag)):999;
+        const settleRot=settleWindow.length?mean(settleWindow.map(v=>v.rotation)):999;
+        const stable=settleWindow.length>=5&&settleLin<th.settleLin&&settleRot<th.settleRot;
+        const strongOpposite=oppositeImpulse>Math.max(th.impulse*1.25,transitionCandidate.strength*1.35);
+        if(stable&&age>250){
+          transitionCandidate.settleSeconds=Math.min(2,transitionCandidate.settleSeconds+dt);
+        }else{
+          transitionCandidate.settleSeconds=Math.max(0,transitionCandidate.settleSeconds-dt*.45);
+        }
+        lastSignal={candidate:transitionCandidate.type==='up'?'일어남 후보':'앉음 후보',impulseScore:transitionCandidate.strength,settleScore:transitionCandidate.settleSeconds,moveScore:gate.moveSeconds,rotation:rotMean,cooldownLeft:0,raw:stable?'후보 안정 확인 중':'후보 감지'};
+        if(transitionCandidate.settleSeconds>=th.settleNeed){
+          const label=transitionCandidate.type==='up'?'일어남 impulse+안정 확정':'앉음 impulse+안정 확정';
+          clearTransitionCandidate(label);
+          gate.lastTransitionAt=now;
+          return EVENT_VERTICAL;
+        }
+        if(age>th.candidateMaxMs||strongOpposite){
+          clearTransitionCandidate(strongOpposite?'반대 impulse로 후보 취소':'후보 안정 미확인');
+        }else{
+          gate.status=stable?`전환 후보 안정 확인 중 ${transitionCandidate.settleSeconds.toFixed(1)}s`:'전환 후보 감지, 안정 대기';
+          return EVENT_NONE;
+        }
+      }
+
+      const still=settleWindow.length>5&&mean(settleWindow.map(v=>v.linMag))<th.settleLin*.72&&mean(settleWindow.map(v=>v.rotation))<Math.min(28,th.settleRot);
+      gate.status=still?'정지: 기존 상태 유지':(gate.moveSeconds>.6?'일반 움직임: 상태 유지':'상태 전환 없음');
+      lastSignal={candidate:'없음',impulseScore:Math.max(posImpulse,negImpulse),settleScore:0,moveScore:gate.moveSeconds,rotation:rotMean,cooldownLeft:0,raw:still?EVENT_STILL:EVENT_NONE};
       return still?EVENT_STILL:EVENT_NONE;
     }
     function nextBodyState(prev,eventLabel){if(eventLabel===EVENT_VERTICAL)return prev===BODY_SEATED?BODY_STANDING:BODY_SEATED;return prev}
@@ -244,14 +303,14 @@
       if(label==='up'){linMag=.48+r(.12);verticalAbs=.55+r(.15);verticalUpAccel=.50+r(.14);verticalVelocity=.22+r(.06);rotation=34+r(14);jerk=.20+r(.08)}
       if(label==='down'){linMag=.48+r(.12);verticalAbs=.55+r(.15);verticalUpAccel=-.50+r(.14);verticalVelocity=-.22+r(.06);rotation=34+r(14);jerk=.20+r(.08)}
       if(label==='move'){linMag=1.1+r(.28);verticalAbs=.35+r(.12);verticalUpAccel=.04+r(.08);verticalVelocity=.01+r(.03);rotation=90+r(30);jerk=.60+r(.2)}
-      const now=Date.now();motionWindow.push({t:now,verticalUpAccel,verticalVelocity,verticalAbs:Math.abs(verticalAbs),linMag:Math.abs(linMag),rotation:Math.max(0,rotation),jerk:Math.abs(jerk)});motionWindow=motionWindow.slice(-220);
+      const now=Date.now();motionWindow.push({t:now,dt:.18,verticalUpAccel,verticalVelocity,verticalAbs:Math.abs(verticalAbs),linMag:Math.abs(linMag),rotation:Math.max(0,rotation),jerk:Math.abs(jerk)});motionWindow=motionWindow.slice(-220);
     }
-    function startDemo(mode){clearInterval(demoTimer);lastTick=Date.now();sensorRunning=true;if(!state.initialized){state.initialized=true;state.bodyState=mode==='sit'?BODY_STANDING:BODY_SEATED}if(state.phoneMode==='desk')state.phoneMode='hand';gate.walkSeconds=0;gate.upSeconds=0;gate.downSeconds=0;const labelMap={stand:'up',sit:'down',move:'move',still:EVENT_STILL};$('sensorStatus').textContent='데모 작동 중';$('sensorDot').className='dot active';addLog(`${mode} 데모 시작`);let n=0;demoTimer=setInterval(()=>{n++;const label=labelMap[mode]||EVENT_STILL;if(mode==='stand')pushSynthetic(n<=12?'up':EVENT_STILL);else if(mode==='sit')pushSynthetic(n<=12?'down':EVENT_STILL);else if(mode==='move')pushSynthetic('move');else pushSynthetic(EVENT_STILL);updateActivity(detectEvent())},180)}
+    function startDemo(mode){clearInterval(demoTimer);lastTick=Date.now();sensorRunning=true;if(!state.initialized){state.initialized=true;state.bodyState=mode==='sit'?BODY_STANDING:BODY_SEATED}if(state.phoneMode==='desk')state.phoneMode='hand';gate.moveSeconds=0;transitionCandidate={type:null,startedAt:0,strength:0,settleSeconds:0,lastSeenAt:0};const labelMap={stand:'up',sit:'down',move:'move',still:EVENT_STILL};$('sensorStatus').textContent='데모 작동 중';$('sensorDot').className='dot active';addLog(`${mode} 데모 시작`);let n=0;demoTimer=setInterval(()=>{n++;const label=labelMap[mode]||EVENT_STILL;if(mode==='stand')pushSynthetic(n<=5?'up':EVENT_STILL);else if(mode==='sit')pushSynthetic(n<=5?'down':EVENT_STILL);else if(mode==='move')pushSynthetic('move');else pushSynthetic(EVENT_STILL);updateActivity(detectEvent())},180)}
 
     function calcScore(){const neck=Number($('neckPain').value),back=Number($('backPain').value),fatigue=Number($('fatigue').value);state.survey={neck,back,fatigue};const sedentaryPart=Math.min(35,Math.round((state.sedentarySeconds/BOUT_THRESHOLD_SECONDS)*8));const boutPart=Math.min(25,state.boutCount*10+Math.max(0,state.boutCount-state.breakCount)*5);const surveyPart=Math.min(40,Math.round(((neck+back+fatigue)/30)*40));state.scoreParts={sedentary:sedentaryPart,bout:boutPart,survey:surveyPart};state.score=Math.min(100,sedentaryPart+boutPart+surveyPart);addLog(`Body Load Score ${state.score}점 계산 완료`);saveState();render();showScreen('score')}
     function scoreLevel(score){if(score>=70)return{text:'높음',cls:'badge-bad',routine:'5분 목·허리 스트레칭 + 2분 걷기',desc:'연속 좌식과 주관 피로가 높습니다. 자리에서 일어나 목 회전, 흉추 펴기, 허리 신전, 짧은 걷기를 진행하세요.'};if(score>=40)return{text:'보통',cls:'badge-warn',routine:'2분 기립 + 어깨·목 스트레칭',desc:'좌식 부하가 누적되고 있습니다. 짧게 일어나 어깨를 열고 목 주변 긴장을 풀어 주세요.'};return{text:'낮음',cls:'badge-good',routine:'가벼운 자세 리셋',desc:'현재 부하는 낮은 편입니다. 수업이나 작업 사이에 짧게 일어나 자세를 리셋하세요.'}}
     function startRoutineCheck(){routineMode=true;routineActiveSeconds=0;$('routineStatus').textContent='수행 확인 중입니다. 일어난 상태가 8초 이상 유지되면 완료로 기록합니다.';addLog('교정 루틴 수행 확인 시작');clearInterval(routineTimer);routineTimer=setInterval(()=>{if(!routineMode)return;if(routineActiveSeconds>=8){routineMode=false;clearInterval(routineTimer);$('routineStatus').innerHTML='<span class="badge-good">완료:</span> 일어난 상태가 8초 이상 유지되어 루틴 수행으로 기록했습니다.';addLog('교정 루틴 수행 완료');saveState();render()}},500)}
-    function resetAll(){const savedSettings=state.settings,savedPhone=state.phoneMode;Object.assign(state,defaultState());state.settings=savedSettings;state.phoneMode=savedPhone;seatedStreak=0;movementEMA=0;currentEvent='대기';motionWindow=[];gravity={x:0,y:0,z:9.81,ready:false};verticalVelocity=0;lastSampleTime=0;gate={lastTransitionAt:0,upSeconds:0,downSeconds:0,walkSeconds:0,status:'초기화'};lastSignal={upSeconds:0,downSeconds:0,walkScore:0,rotation:0,cooldownLeft:0,raw:'초기화'};routineMode=false;routineActiveSeconds=0;clearInterval(demoTimer);clearInterval(routineTimer);saveState();render()}
+    function resetAll(){const savedSettings=state.settings,savedPhone=state.phoneMode;Object.assign(state,defaultState());state.settings=savedSettings;state.phoneMode=savedPhone;seatedStreak=0;movementEMA=0;currentEvent='대기';motionWindow=[];gravity={x:0,y:0,z:9.81,ready:false};verticalVelocity=0;lastSampleTime=0;gate={lastTransitionAt:0,moveSeconds:0,status:'초기화'};transitionCandidate={type:null,startedAt:0,strength:0,settleSeconds:0,lastSeenAt:0};lastSignal={candidate:'없음',impulseScore:0,settleScore:0,moveScore:0,rotation:0,cooldownLeft:0,raw:'초기화'};routineMode=false;routineActiveSeconds=0;clearInterval(demoTimer);clearInterval(routineTimer);saveState();render()}
     function saveSleep(){state.sleep={quality:Number($('sleepQuality').value),hours:Number($('sleepHours').value),wakeGoal:$('wakeGoal').value};addLog('수면 질 간이 입력 저장');saveState();renderSleepFeedback();showScreen('sleep')}
     function renderSleepFeedback(){const q=state.sleep.quality,h=state.sleep.hours,high=state.score>=70,mid=state.score>=40&&state.score<70;let msg='';if(high&&q<=5)msg=`오늘 Body Load Score가 ${state.score}점으로 높고, 수면 만족도는 ${q}/10입니다. 장시간 좌식과 높은 통증·피로가 수면 질 저하의 원인 후보일 수 있습니다.`;else if(mid)msg=`오늘 Body Load Score는 ${state.score}점으로 보통 수준입니다. 좌식 패턴이 누적되기 전에 30~60분마다 짧은 기립 또는 걷기를 권장합니다.`;else msg=`오늘 Body Load Score는 ${state.score}점으로 낮은 편입니다. 수면 시간이 ${h}시간으로 충분한지 확인하고, 기상 시간 ${state.sleep.wakeGoal} 전후의 규칙성을 유지하세요.`;$('sleepFeedback').textContent=msg;renderMiniChart()}
     function renderMiniChart(){const chart=$('miniChart');const vals=[{label:'좌식',value:Math.min(100,Math.round((state.sedentarySeconds/Math.max(1,BOUT_THRESHOLD_SECONDS*3))*100))},{label:'BLS',value:state.score},{label:'수면',value:state.sleep.quality*10}];chart.innerHTML=vals.map(v=>`<div class="bar" data-label="${v.label}" style="height:${Math.max(8,v.value)}%"></div>`).join('')}
@@ -267,7 +326,7 @@
       $('routineTitle').textContent=level.routine;$('routineDesc').textContent=level.desc;$('routineLog').textContent=state.logs.length?state.logs.join('\n'):'아직 수행 기록이 없습니다.';
       $('sleepQuality').value=state.sleep.quality;$('sleepQualityVal').textContent=state.sleep.quality;$('sleepHours').value=state.sleep.hours;$('wakeGoal').value=state.sleep.wakeGoal;
       $('sensitivity').value=state.settings.sensitivity;$('sensitivityVal').textContent=sensitivityText(state.settings.sensitivity);
-      $('verticalScore').textContent=`↑${(lastSignal.upSeconds||0).toFixed(1)}초 / ↓${(lastSignal.downSeconds||0).toFixed(1)}초`;$('walkScore').textContent=(lastSignal.walkScore||0).toFixed(2)+'초';$('rotationScore').textContent=(lastSignal.rotation||0).toFixed(1);$('cooldownText').textContent=lastSignal.cooldownLeft>0?lastSignal.cooldownLeft.toFixed(1)+'초':'없음';$('sensorConfidenceText').textContent=`${conf.label} (${state.confidence.score||0}점)`;$('phoneModeText').textContent=PHONE_LABEL[state.phoneMode]||state.phoneMode;
+      $('verticalScore').textContent=`${lastSignal.candidate||'없음'} · impulse ${(lastSignal.impulseScore||0).toFixed(2)} · 안정 ${(lastSignal.settleScore||0).toFixed(1)}초`;$('walkScore').textContent=(lastSignal.moveScore||0).toFixed(2)+'초';$('rotationScore').textContent=(lastSignal.rotation||0).toFixed(1);$('cooldownText').textContent=lastSignal.cooldownLeft>0?lastSignal.cooldownLeft.toFixed(1)+'초':'없음';$('sensorConfidenceText').textContent=`${conf.label} (${state.confidence.score||0}점)`;$('phoneModeText').textContent=PHONE_LABEL[state.phoneMode]||state.phoneMode;
       renderMiniChart();saveState();
     }
     function showScreen(name){document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));document.querySelector(`#screen-${name}`).classList.add('active');document.querySelectorAll('.nav-btn').forEach(b=>b.classList.toggle('active',b.dataset.screen===name))}
