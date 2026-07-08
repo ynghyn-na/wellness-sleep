@@ -762,7 +762,7 @@ function computeOfficialScores(readSurvey=false){
   const sedentaryRatio=clamp(state.sedentarySeconds/awakeSeconds,0,1);
   const sRatio=clamp(sedentaryRatio/0.7652,0,1);
   const sBout=clamp(state.longestSedentaryBout/1800,0,1);
-  const targetTransitions=32;
+  const targetTransitions=Math.max(1,(state.awakeHours*60)/30);
   const sActivity=Math.max(0,1-(state.eligibleTransitionCount/targetTransitions));
   const sNorm=.4*sRatio+.4*sBout+.2*sActivity;
   const neck=clamp(Number(state.survey.neck)||1,1,5),back=clamp(Number(state.survey.back)||1,1,5),fatigue=clamp(Number(state.survey.fatigue)||1,1,5);state.survey={neck,back,fatigue};
